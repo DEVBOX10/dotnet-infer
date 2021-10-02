@@ -80,50 +80,57 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                 return BuildCompactRegex(automaton, collapseAlternatives);
             }
 
-            var condensation = automaton.ComputeCondensation(automaton.Start);
-
-            RegexpTreeNode<TElement, TElementDistribution>[][,] componentRegexps = Util.ArrayInit(
-                condensation.ComponentCount, i => BuildStronglyConnectedComponentRegexp(condensation.GetComponent(i)));
-            RegexpTreeNode<TElement, TElementDistribution>[] stateRegexps = Util.ArrayInit(
-                automaton.States.Count, i => RegexpTreeNode<TElement, TElementDistribution>.Nothing());
-
-            // Dynamic programming in reverse topological order
-            for (int componentIndex = 0; componentIndex < condensation.ComponentCount; ++componentIndex)
+            using (var condensation = automaton.ComputeCondensation(automaton.Start))
             {
-                var currentComponent = condensation.GetComponent(componentIndex);
-                for (int stateIndex = 0; stateIndex < currentComponent.Size; ++stateIndex)
-                {
-                    var state = currentComponent.GetStateByIndex(stateIndex);
-                    RegexpTreeNode<TElement, TElementDistribution> stateDownwardRegexp = state.CanEnd ? RegexpTreeNode<TElement, TElementDistribution>.Empty() : RegexpTreeNode<TElement, TElementDistribution>.Nothing();
+                RegexpTreeNode<TElement, TElementDistribution>[][,] componentRegexps = Util.ArrayInit(
+                    condensation.ComponentCount,
+                    i => BuildStronglyConnectedComponentRegexp(condensation.GetComponent(i)));
+                RegexpTreeNode<TElement, TElementDistribution>[] stateRegexps = Util.ArrayInit(
+                    automaton.States.Count,
+                    i => RegexpTreeNode<TElement, TElementDistribution>.Nothing());
 
-                    foreach (var transition in state.Transitions)
+                // Dynamic programming in reverse topological order
+                for (int componentIndex = 0; componentIndex < condensation.ComponentCount; ++componentIndex)
+                {
+                    var currentComponent = condensation.GetComponent(componentIndex);
+                    for (int stateIndex = 0; stateIndex < currentComponent.Size; ++stateIndex)
                     {
-                        var destState = automaton.States[transition.DestinationStateIndex];
-                        if (!transition.Weight.IsZero && !currentComponent.HasState(destState))
+                        var state = currentComponent.GetStateByIndex(stateIndex);
+                        RegexpTreeNode<TElement, TElementDistribution> stateDownwardRegexp = state.CanEnd
+                            ? RegexpTreeNode<TElement, TElementDistribution>.Empty()
+                            : RegexpTreeNode<TElement, TElementDistribution>.Nothing();
+
+                        foreach (var transition in state.Transitions)
                         {
-                            var destStateRegexp = transition.IsEpsilon
-                                ? RegexpTreeNode<TElement, TElementDistribution>.Empty()
-                                : RegexpTreeNode<TElement, TElementDistribution>.FromElementSet(transition.ElementDistribution);
-                            stateDownwardRegexp = RegexpTreeNode<TElement, TElementDistribution>.Or(
-                                stateDownwardRegexp,
-                                RegexpTreeNode<TElement, TElementDistribution>.Concat(destStateRegexp, stateRegexps[transition.DestinationStateIndex]));
+                            var destState = automaton.States[transition.DestinationStateIndex];
+                            if (!transition.Weight.IsZero && !currentComponent.HasState(destState))
+                            {
+                                var destStateRegexp = transition.IsEpsilon
+                                    ? RegexpTreeNode<TElement, TElementDistribution>.Empty()
+                                    : RegexpTreeNode<TElement, TElementDistribution>.FromElementSet(transition.ElementDistribution);
+                                stateDownwardRegexp = RegexpTreeNode<TElement, TElementDistribution>.Or(
+                                    stateDownwardRegexp,
+                                    RegexpTreeNode<TElement, TElementDistribution>.Concat(destStateRegexp, stateRegexps[transition.DestinationStateIndex]));
+                            }
+                        }
+
+                        for (int updatedStateIndex = 0; updatedStateIndex < currentComponent.Size; ++updatedStateIndex)
+                        {
+                            var updatedState = currentComponent.GetStateByIndex(updatedStateIndex);
+                            stateRegexps[updatedState.Index] = RegexpTreeNode<TElement, TElementDistribution>.Or(
+                                stateRegexps[updatedState.Index],
+                                RegexpTreeNode<TElement, TElementDistribution>.Concat(
+                                    componentRegexps[componentIndex][updatedStateIndex, stateIndex],
+                                    stateDownwardRegexp));
                         }
                     }
-
-                    for (int updatedStateIndex = 0; updatedStateIndex < currentComponent.Size; ++updatedStateIndex)
-                    {
-                        var updatedState = currentComponent.GetStateByIndex(updatedStateIndex);
-                        stateRegexps[updatedState.Index] = RegexpTreeNode<TElement, TElementDistribution>.Or(
-                            stateRegexps[updatedState.Index],
-                            RegexpTreeNode<TElement, TElementDistribution>.Concat(componentRegexps[componentIndex][updatedStateIndex, stateIndex], stateDownwardRegexp));
-                    }
                 }
+
+                RegexpTreeNode<TElement, TElementDistribution> result = stateRegexps[automaton.Start.Index];
+                result.Simplify(collapseAlternatives);
+
+                return result;
             }
-
-            RegexpTreeNode<TElement, TElementDistribution> result = stateRegexps[automaton.Start.Index];
-            result.Simplify(collapseAlternatives);
-
-            return result;
         }
 
         /// <summary>
@@ -153,195 +160,203 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
             List<int> sizeOneList = new List<int>() { 0 };
 
             // Create the graph
-            var condensation = automaton.ComputeCondensation(automaton.Start);
-
-            // The extra node is the end node.
-            var graphNodes = new List<GraphNode<TElement, TElementDistribution>>();
-            var stateIndexToNodeIndex = new Dictionary<int, int>();
-
-            int nodeIndex = 0;
-            graphNodes.Add(new GraphNode<TElement, TElementDistribution>(nodeIndex));
-
-            for (int componentIndex = 0; componentIndex < condensation.ComponentCount; ++componentIndex)
+            using (var condensation = automaton.ComputeCondensation(automaton.Start))
             {
-                var currentComponent = condensation.GetComponent(componentIndex);
-                var componentRegexps = BuildStronglyConnectedComponentRegexp(condensation.GetComponent(componentIndex));
+                // The extra node is the end node.
+                var graphNodes = new List<GraphNode<TElement, TElementDistribution>>();
+                var stateIndexToNodeIndex = new Dictionary<int, int>();
 
-                var stateIndicesWithOutgoingEdges =
-                    currentComponent.Size == 1 ?
-                    sizeOneList :
-                    Enumerable.Range(0, currentComponent.Size).Where(i =>
-                        {
-                            var s = currentComponent.GetStateByIndex(i);
-                            if (s.CanEnd)
-                            {
-                                return true;
-                            }
+                int nodeIndex = 0;
+                graphNodes.Add(new GraphNode<TElement, TElementDistribution>(nodeIndex));
 
-                            foreach (var t in s.Transitions)
-                            {
-                                var dest = automaton.States[t.DestinationStateIndex];
-                                if ((!t.Weight.IsZero) && (!currentComponent.HasState(dest)))
+                for (int componentIndex = 0; componentIndex < condensation.ComponentCount; ++componentIndex)
+                {
+                    var currentComponent = condensation.GetComponent(componentIndex);
+                    var componentRegexps = BuildStronglyConnectedComponentRegexp(condensation.GetComponent(componentIndex));
+
+                    var stateIndicesWithOutgoingEdges =
+                        currentComponent.Size == 1
+                            ? sizeOneList
+                            : Enumerable.Range(0, currentComponent.Size).Where(
+                                i =>
                                 {
-                                    return true;
+                                    var s = currentComponent.GetStateByIndex(i);
+                                    if (s.CanEnd)
+                                    {
+                                        return true;
+                                    }
+
+                                    foreach (var t in s.Transitions)
+                                    {
+                                        var dest = automaton.States[t.DestinationStateIndex];
+                                        if ((!t.Weight.IsZero) && (!currentComponent.HasState(dest)))
+                                        {
+                                            return true;
+                                        }
+                                    }
+
+                                    return false;
+                                }).ToList();
+
+                    var stateIndicesWithIncomingEdges =
+                        currentComponent.Size == 1
+                            ? sizeOneList
+                            : Enumerable.Range(0, currentComponent.Size).Where(
+                                i =>
+                                {
+                                    var s = currentComponent.GetStateByIndex(i);
+                                    var sIdx = s.Index;
+                                    foreach (var s1 in automaton.States)
+                                    {
+                                        if (currentComponent.HasState(s1))
+                                        {
+                                            continue;
+                                        }
+
+                                        foreach (var t in s1.Transitions)
+                                        {
+                                            if (t.DestinationStateIndex == sIdx && !t.Weight.IsZero)
+                                            {
+                                                return true;
+                                            }
+                                        }
+                                    }
+
+                                    return false;
+                                }).ToList();
+
+                    var incomingAndOutgoingStateIndices = stateIndicesWithOutgoingEdges.Intersect(stateIndicesWithIncomingEdges).ToList();
+
+                    // If there is only one incoming node intersecting with outgoing nodes we can build edges internal to the component
+                    bool buildInternalEdges = incomingAndOutgoingStateIndices.Count <= 1;
+                    var allOutgoingRegexes = new Dictionary<int, Dictionary<int, RegexpTreeNode<TElement, TElementDistribution>>>();
+                    GraphNode<TElement, TElementDistribution> currentNode = null;
+                    foreach (int stateIndex in stateIndicesWithOutgoingEdges)
+                    {
+                        var state = currentComponent.GetStateByIndex(stateIndex);
+                        if (buildInternalEdges)
+                        {
+                            stateIndexToNodeIndex[state.Index] = ++nodeIndex;
+                            currentNode = new GraphNode<TElement, TElementDistribution>(nodeIndex);
+                            currentNode.Regex = componentRegexps[stateIndex, stateIndex];
+                        }
+
+                        var outgoingRegexes = new Dictionary<int, RegexpTreeNode<TElement, TElementDistribution>>();
+                        foreach (var transition in state.Transitions)
+                        {
+                            var destState = automaton.States[transition.DestinationStateIndex];
+                            if ((!transition.Weight.IsZero) && (!currentComponent.HasState(destState)))
+                            {
+                                var regex =
+                                    transition.IsEpsilon
+                                        ? RegexpTreeNode<TElement, TElementDistribution>.Empty()
+                                        : RegexpTreeNode<TElement, TElementDistribution>.FromElementSet(transition.ElementDistribution);
+
+                                var destinationNodeIndex = stateIndexToNodeIndex[transition.DestinationStateIndex];
+                                if (outgoingRegexes.ContainsKey(destinationNodeIndex))
+                                {
+                                    outgoingRegexes[destinationNodeIndex] =
+                                        RegexpTreeNode<TElement, TElementDistribution>.Or(outgoingRegexes[destinationNodeIndex], regex);
+                                }
+                                else
+                                {
+                                    outgoingRegexes[destinationNodeIndex] = regex;
                                 }
                             }
+                        }
 
-                            return false;
-                        }).ToList();
-
-                var stateIndicesWithIncomingEdges =
-                    currentComponent.Size == 1 ?
-                    sizeOneList :
-                    Enumerable.Range(0, currentComponent.Size).Where(i =>
+                        if (state.CanEnd)
                         {
-                            var s = currentComponent.GetStateByIndex(i);
-                            var sIdx = s.Index;
-                            foreach (var s1 in automaton.States)
+                            outgoingRegexes[EndNodeIndex] = RegexpTreeNode<TElement, TElementDistribution>.Empty();
+                        }
+
+                        allOutgoingRegexes[stateIndex] = outgoingRegexes;
+
+                        if (buildInternalEdges)
+                        {
+                            foreach (var kvp in outgoingRegexes)
                             {
-                                if (currentComponent.HasState(s1))
+                                var edge = new Edge<TElement, TElementDistribution>(kvp.Key);
+                                edge.Regex = kvp.Value;
+                                currentNode.OutgoingNodes.Add(edge);
+                            }
+
+                            graphNodes.Add(currentNode);
+                        }
+                    }
+
+                    foreach (int stateIndex in stateIndicesWithIncomingEdges)
+                    {
+                        var state = currentComponent.GetStateByIndex(stateIndex);
+                        if (!stateIndexToNodeIndex.ContainsKey(state.Index))
+                        {
+                            stateIndexToNodeIndex[state.Index] = ++nodeIndex;
+                            graphNodes.Add(new GraphNode<TElement, TElementDistribution>(nodeIndex));
+                        }
+
+                        currentNode = graphNodes[stateIndexToNodeIndex[state.Index]];
+                        currentNode.Regex = componentRegexps[stateIndex, stateIndex];
+
+                        if (buildInternalEdges)
+                        {
+                            foreach (int stateIndex2 in stateIndicesWithOutgoingEdges)
+                            {
+                                if (stateIndex == stateIndex2)
                                 {
                                     continue;
                                 }
 
-                                foreach (var t in s1.Transitions)
+                                var state2 = currentComponent.GetStateByIndex(stateIndex2);
+                                var edge = new Edge<TElement, TElementDistribution>(stateIndexToNodeIndex[state2.Index]);
+                                edge.Regex = componentRegexps[stateIndex, stateIndex2];
+                                currentNode.OutgoingNodes.Add(edge);
+                            }
+                        }
+                        else
+                        {
+                            var outgoingRegexes = new Dictionary<int, RegexpTreeNode<TElement, TElementDistribution>>();
+                            foreach (int stateIndex2 in stateIndicesWithOutgoingEdges)
+                            {
+                                var regex = RegexpTreeNode<TElement, TElementDistribution>.Empty();
+                                var state2 = currentComponent.GetStateByIndex(stateIndex2);
+                                if (stateIndex != stateIndex2)
                                 {
-                                    if (t.DestinationStateIndex == sIdx && !t.Weight.IsZero)
+                                    regex = RegexpTreeNode<TElement, TElementDistribution>.Concat(
+                                        componentRegexps[stateIndex, stateIndex2],
+                                        componentRegexps[stateIndex, stateIndex2]);
+                                }
+
+                                foreach (var outgoingRegex in allOutgoingRegexes[stateIndex2])
+                                {
+                                    var chainedRegex = RegexpTreeNode<TElement, TElementDistribution>.Concat(regex, outgoingRegex.Value);
+                                    if (!outgoingRegexes.ContainsKey(outgoingRegex.Key))
                                     {
-                                        return true;
+                                        outgoingRegexes.Add(outgoingRegex.Key, chainedRegex);
+                                    }
+                                    else
+                                    {
+                                        outgoingRegexes[outgoingRegex.Key] = RegexpTreeNode<TElement, TElementDistribution>.Or(
+                                            outgoingRegexes[outgoingRegex.Key],
+                                            chainedRegex);
                                     }
                                 }
                             }
 
-                            return false;
-                        }).ToList();
-
-                var incomingAndOutgoingStateIndices = stateIndicesWithOutgoingEdges.Intersect(stateIndicesWithIncomingEdges).ToList();
-
-                // If there is only one incoming node intersecting with outgoing nodes we can build edges internal to the component
-                bool buildInternalEdges = incomingAndOutgoingStateIndices.Count <= 1;
-                var allOutgoingRegexes = new Dictionary<int, Dictionary<int, RegexpTreeNode<TElement, TElementDistribution>>>();
-                GraphNode<TElement, TElementDistribution> currentNode = null;
-                foreach (int stateIndex in stateIndicesWithOutgoingEdges)
-                {
-                    var state = currentComponent.GetStateByIndex(stateIndex);
-                    if (buildInternalEdges)
-                    {
-                        stateIndexToNodeIndex[state.Index] = ++nodeIndex;
-                        currentNode = new GraphNode<TElement, TElementDistribution>(nodeIndex);
-                        currentNode.Regex = componentRegexps[stateIndex, stateIndex];
-                    }
-
-                    var outgoingRegexes = new Dictionary<int, RegexpTreeNode<TElement, TElementDistribution>>();
-                    foreach (var transition in state.Transitions)
-                    {
-                        var destState = automaton.States[transition.DestinationStateIndex];
-                        if ((!transition.Weight.IsZero) && (!currentComponent.HasState(destState)))
-                        {
-                            var regex =
-                                transition.IsEpsilon ?
-                                RegexpTreeNode<TElement, TElementDistribution>.Empty() :
-                                RegexpTreeNode<TElement, TElementDistribution>.FromElementSet(transition.ElementDistribution);
-
-                            var destinationNodeIndex = stateIndexToNodeIndex[transition.DestinationStateIndex];
-                            if (outgoingRegexes.ContainsKey(destinationNodeIndex))
+                            foreach (var kvp in outgoingRegexes)
                             {
-                                outgoingRegexes[destinationNodeIndex] = RegexpTreeNode<TElement, TElementDistribution>.Or(outgoingRegexes[destinationNodeIndex], regex);
-                            }
-                            else
-                            {
-                                outgoingRegexes[destinationNodeIndex] = regex;
+                                var edge = new Edge<TElement, TElementDistribution>(kvp.Key);
+                                edge.Regex = kvp.Value;
+                                currentNode.OutgoingNodes.Add(edge);
                             }
                         }
-                    }
-
-                    if (state.CanEnd)
-                    {
-                        outgoingRegexes[EndNodeIndex] = RegexpTreeNode<TElement, TElementDistribution>.Empty();
-                    }
-
-                    allOutgoingRegexes[stateIndex] = outgoingRegexes;
-
-                    if (buildInternalEdges)
-                    {
-                        foreach (var kvp in outgoingRegexes)
-                        {
-                            var edge = new Edge<TElement, TElementDistribution>(kvp.Key);
-                            edge.Regex = kvp.Value;
-                            currentNode.OutgoingNodes.Add(edge);
-                        }
-
-                        graphNodes.Add(currentNode);
                     }
                 }
 
-                foreach (int stateIndex in stateIndicesWithIncomingEdges)
-                {
-                    var state = currentComponent.GetStateByIndex(stateIndex);
-                    if (!stateIndexToNodeIndex.ContainsKey(state.Index))
-                    {
-                        stateIndexToNodeIndex[state.Index] = ++nodeIndex;
-                        graphNodes.Add(new GraphNode<TElement, TElementDistribution>(nodeIndex));
-                    }
-
-                    currentNode = graphNodes[stateIndexToNodeIndex[state.Index]];
-                    currentNode.Regex = componentRegexps[stateIndex, stateIndex];
-
-                    if (buildInternalEdges)
-                    {
-                        foreach (int stateIndex2 in stateIndicesWithOutgoingEdges)
-                        {
-                            if (stateIndex == stateIndex2)
-                            {
-                                continue;
-                            }
-
-                            var state2 = currentComponent.GetStateByIndex(stateIndex2);
-                            var edge = new Edge<TElement, TElementDistribution>(stateIndexToNodeIndex[state2.Index]);
-                            edge.Regex = componentRegexps[stateIndex, stateIndex2];
-                            currentNode.OutgoingNodes.Add(edge);
-                        }
-                    }
-                    else
-                    {
-                        var outgoingRegexes = new Dictionary<int, RegexpTreeNode<TElement, TElementDistribution>>();
-                        foreach (int stateIndex2 in stateIndicesWithOutgoingEdges)
-                        {
-                            var regex = RegexpTreeNode<TElement, TElementDistribution>.Empty();
-                            var state2 = currentComponent.GetStateByIndex(stateIndex2);
-                            if (stateIndex != stateIndex2)
-                            {
-                                regex = RegexpTreeNode<TElement, TElementDistribution>.Concat(componentRegexps[stateIndex, stateIndex2], componentRegexps[stateIndex, stateIndex2]);
-                            }
-
-                            foreach (var outgoingRegex in allOutgoingRegexes[stateIndex2])
-                            {
-                                var chainedRegex = RegexpTreeNode<TElement, TElementDistribution>.Concat(regex, outgoingRegex.Value);
-                                if (!outgoingRegexes.ContainsKey(outgoingRegex.Key))
-                                {
-                                    outgoingRegexes.Add(outgoingRegex.Key, chainedRegex);
-                                }
-                                else
-                                {
-                                    outgoingRegexes[outgoingRegex.Key] = RegexpTreeNode<TElement, TElementDistribution>.Or(outgoingRegexes[outgoingRegex.Key], chainedRegex);
-                                }
-                            }
-                        }
-
-                        foreach (var kvp in outgoingRegexes)
-                        {
-                            var edge = new Edge<TElement, TElementDistribution>(kvp.Key);
-                            edge.Regex = kvp.Value;
-                            currentNode.OutgoingNodes.Add(edge);
-                        }
-                    }
-                }
+                var graph = new Graph<TElement, TElementDistribution>();
+                graph.Nodes = graphNodes.ToArray();
+                var result = graph.BuildRegex(collapseAlternatives);
+                return result;
             }
-
-            var graph = new Graph<TElement, TElementDistribution>();
-            graph.Nodes = graphNodes.ToArray();
-            var result = graph.BuildRegex(collapseAlternatives);
-            return result;
         }
 
         /// <summary>
@@ -803,14 +818,17 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
             /// <returns>A regex tree.</returns>
             private RegexpTreeNode<TElement, TElementDistribution> BuildRegexFromTRGraph()
             {
-                var transitivelyReducedEdges = this.Nodes.SelectMany(node => node.OutgoingNodes.Where(e => e.EdgeType == EdgeTypes.RemovedByTR).Select(e => Pair.Create(node.Index, e.Index))).ToList();
+                var transitivelyReducedEdges = this.Nodes
+                    .SelectMany(node => node.OutgoingNodes.Where(e => e.EdgeType == EdgeTypes.RemovedByTR)
+                    .Select(e => new IntPair(node.Index, e.Index)))
+                    .ToList();
                 if (transitivelyReducedEdges.Count > 0)
                 {
                     // Build an interval tree based on containment.
                     transitivelyReducedEdges.Sort(new ContainmentIntervalComparer());
                     var root = new IntervalTreeNode()
                     {
-                        Interval = Pair.Create(this.NodeCount - 1, 0)
+                        Interval = new IntPair(this.NodeCount - 1, 0)
                     };
 
                     var currNode = root;
@@ -821,7 +839,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
 
                     root.SortAndMergeChildren();
 
-                    Pair<int, int> enclosingInterval;
+                    IntPair enclosingInterval;
                     this.TryCollapsingIntervalNode(root, out enclosingInterval);
                 }
 
@@ -869,7 +887,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
             /// <param name="node">The interval tree node.</param>
             /// <param name="enclosingInterval">The enclosing interval (output).</param>
             /// <returns>True if successful, false otherwise.</returns>
-            private bool TryCollapsingIntervalNode(IntervalTreeNode node, out Pair<int, int> enclosingInterval)
+            private bool TryCollapsingIntervalNode(IntervalTreeNode node, out IntPair enclosingInterval)
             {
                 // Children should already be ordered.
                 var children = node.Children;
@@ -900,7 +918,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                         }
                     }
 
-                    Pair<int, int> childEnclosingInterval;
+                    IntPair childEnclosingInterval;
                     bool success = this.TryCollapsingIntervalNode(child, out childEnclosingInterval);
                     if (!success)
                     {
@@ -934,7 +952,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                     }
                 }
 
-                enclosingInterval = Pair.Create(incomingExtreme, outgoingExtreme);
+                enclosingInterval = new IntPair(incomingExtreme, outgoingExtreme);
 
                 if (incomingExtreme > intervalStart || outgoingExtreme < intervalEnd)
                 {
@@ -1063,7 +1081,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
             /// <summary>
             /// Comparer for comparing two intervals that orders by containment.
             /// </summary>
-            private class ContainmentIntervalComparer : IComparer<Pair<int, int>>
+            private class ContainmentIntervalComparer : IComparer<IntPair>
             {
                 /// <summary>
                 /// Compares two intervals.
@@ -1071,7 +1089,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                 /// <param name="x">The first interval.</param>
                 /// <param name="y">The second interval.</param>
                 /// <returns>-1, 1, or 0 depending on containment, or, if no containment, by left-hand bound.</returns>
-                public int Compare(Pair<int, int> x, Pair<int, int> y)
+                public int Compare(IntPair x, IntPair y)
                 {
                     if (x.First < y.First)
                     {
@@ -1137,7 +1155,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                 /// <summary>
                 /// Gets or sets the interval for this node.
                 /// </summary>
-                public Pair<int, int> Interval
+                public IntPair Interval
                 {
                     get;
                     set;
@@ -1190,7 +1208,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                         }
                         else
                         {
-                            newNode.Interval = Pair.Create(lhs, rhs);
+                            newNode.Interval = new IntPair(lhs, rhs);
                             mergedList.Add(newNode);
                             newNode = new IntervalTreeNode();
                             newNode.children.AddRange(child.children);
@@ -1199,7 +1217,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                         }
                     }
 
-                    newNode.Interval = Pair.Create(lhs, rhs);
+                    newNode.Interval = new IntPair(lhs, rhs);
                     mergedList.Add(newNode);
 
                     this.children = mergedList;
@@ -1215,7 +1233,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                 /// </summary>
                 /// <param name="interval">A pair representing the interval.</param>
                 /// <returns>The enclosing node, or null.</returns>
-                public IntervalTreeNode FindEnclosingNode(Pair<int, int> interval)
+                public IntervalTreeNode FindEnclosingNode(IntPair interval)
                 {
                     if (this.Contains(interval))
                     {
@@ -1240,7 +1258,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                 /// </summary>
                 /// <param name="interval">The interval.</param>
                 /// <returns>True of successful, false otherwise.</returns>
-                public bool TryAddInterval(Pair<int, int> interval)
+                public bool TryAddInterval(IntPair interval)
                 {
                     var parent = this.FindEnclosingNode(interval);
                     if (parent != null)
@@ -1274,7 +1292,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                 /// </summary>
                 /// <param name="interval">A pair representing the other interval.</param>
                 /// <returns>True if this interval contains the specified one, false otherwise.</returns>
-                private bool Contains(Pair<int, int> interval)
+                private bool Contains(IntPair interval)
                 {
                     return this.Interval.First >= interval.First && this.Interval.Second <= interval.Second;
                 }

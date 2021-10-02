@@ -58,10 +58,10 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
             return new TThis
             {
                 sequencePairToWeight = srcAutomaton.ApplyFunction<
-                    List<Pair<Option<TSrcElement>, Option<TDestElement>>>,
-                    Pair<Option<TSrcElement>, Option<TDestElement>>,
+                    List<(Option<TSrcElement>, Option<TDestElement>)>,
+                    (Option<TSrcElement>, Option<TDestElement>),
                     TPairDistribution,
-                    ListManipulator<List<Pair<Option<TSrcElement>, Option<TDestElement>>>, Pair<Option<TSrcElement>, Option<TDestElement>>>,
+                    ListManipulator<List<(Option<TSrcElement>, Option<TDestElement>)>, (Option<TSrcElement>, Option<TDestElement>)>,
                     PairListAutomaton>(
                 (dist, weight, group) => ValueTuple.Create(
                     dist.HasValue
@@ -103,10 +103,10 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
             return new TThis
             {
                 sequencePairToWeight = destAutomaton.ApplyFunction<
-                    List<Pair<Option<TSrcElement>, Option<TDestElement>>>,
-                    Pair<Option<TSrcElement>, Option<TDestElement>>,
+                    List<(Option<TSrcElement>, Option<TDestElement>)>,
+                    (Option<TSrcElement>, Option<TDestElement>),
                     TPairDistribution,
-                    ListManipulator<List<Pair<Option<TSrcElement>, Option<TDestElement>>>, Pair<Option<TSrcElement>, Option<TDestElement>>>,
+                    ListManipulator<List<(Option<TSrcElement>, Option<TDestElement>)>, (Option<TSrcElement>, Option<TDestElement>)>,
                     PairListAutomaton>(
                 (dist, weight, group) => ValueTuple.Create(
                     dist.HasValue
@@ -268,7 +268,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
         {
             Argument.CheckIfNotNull(transducer, "transducer");
 
-            var emptySequence = new List<Pair<Option<TSrcElement>, Option<TDestElement>>>();
+            var emptySequence = new List<(Option<TSrcElement>, Option<TDestElement>)>();
             return Sum(
                 transducer,
                 new TThis { sequencePairToWeight = PairListAutomaton.ConstantOnLog(0.0, emptySequence) });
@@ -354,8 +354,8 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
             srcAutomaton = srcAutomaton.GetEpsilonClosure();
 
             var result = new Automaton<TDestSequence, TDestElement, TDestElementDistribution, TDestSequenceManipulator, TDestAutomaton>.Builder();
-            var destStateCache = new Dictionary<(int, int), int>();
-            var stack = new Stack<(int state1, int state2, int destStateIndex)>();
+
+            var (destStateCache, stack) = PreallocatedAutomataObjects.LeaseProductState();
 
             // Creates destination state and schedules projection computation for it.
             // If computation is already scheduled or done the state index is simply taken from cache
@@ -363,13 +363,13 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                 PairListAutomaton.State mappingState,
                 Automaton<TSrcSequence, TSrcElement, TSrcElementDistribution, TSrcSequenceManipulator, TSrcAutomaton>.State srcState)
             {
-                var destPair = (mappingState.Index, srcState.Index);
+                var destPair = new IntPair(mappingState.Index, srcState.Index);
                 if (!destStateCache.TryGetValue(destPair, out var destStateIndex))
                 {
                     var destState = result.AddState();
                     destState.SetEndWeight(mappingState.EndWeight * srcState.EndWeight);
                     stack.Push((mappingState.Index, srcState.Index, destState.Index));
-                    destStateCache[destPair] = destState.Index;
+                    destStateCache.Add(destPair, destState.Index);
                     destStateIndex = destState.Index;
                 }
 
@@ -379,7 +379,6 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
             // Populate the stack with start destination state
             result.StartStateIndex = CreateDestState(mappingAutomaton.Start, srcAutomaton.Start);
             var stringAutomaton = srcAutomaton as StringAutomaton;
-            var sourceDistributionHasLogProbabilityOverrides = stringAutomaton?.HasElementLogValueOverrides ?? false;
 
             while (stack.Count > 0)
             {
@@ -420,25 +419,10 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                             continue;
                         }
 
-                        // In the special case of a log probability override in an ImmutableDiscreteChar element distribution,
-                        // we need to compensate for the fact that the distribution is not normalized.
-                        if (destElementDistribution.HasValue && sourceDistributionHasLogProbabilityOverrides)
-                        {
-                            var discreteChar =
-                                (ImmutableDiscreteChar)(IImmutableDistribution<char, ImmutableDiscreteChar>)srcTransition.ElementDistribution.Value;
-                            if (discreteChar.HasLogProbabilityOverride)
-                            {
-                                var totalMass = discreteChar.Ranges.EnumerableSum(rng =>
-                                    rng.Probability.Value * (rng.EndExclusive - rng.StartInclusive));
-                                projectionLogScale -= System.Math.Log(totalMass);
-                            }
-                        }
-
-                        var destWeight =
-                            sourceDistributionHasLogProbabilityOverrides && destElementDistribution.HasNoValue
-                                ? Weight.One
-                                : Weight.Product(mappingTransition.Weight, srcTransition.Weight,
-                                    Weight.FromLogValue(projectionLogScale));
+                        var destWeight = Weight.Product(
+                            mappingTransition.Weight,
+                            srcTransition.Weight,
+                            Weight.FromLogValue(projectionLogScale));
 
                         // We don't want an unnormalizable distribution to become normalizable due to a rounding error.
                         if (Math.Abs(destWeight.LogValue) < 1e-12)
@@ -487,14 +471,13 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
             var srcSequenceLength = sourceSequenceManipulator.GetLength(srcSequence);
             
             var result = new Automaton<TDestSequence, TDestElement, TDestElementDistribution, TDestSequenceManipulator, TDestAutomaton>.Builder();
-            var destStateCache = new Dictionary<(int, int), int>();
-            var stack = new Stack<(int state1, int state2, int destStateIndex)>();
+            var (destStateCache, stack) = PreallocatedAutomataObjects.LeaseProductState();
 
             // Creates destination state and schedules projection computation for it.
             // If computation is already scheduled or done the state index is simply taken from cache
             int CreateDestState(PairListAutomaton.State mappingState, int srcSequenceIndex)
             {
-                var destPair = (mappingState.Index, srcSequenceIndex);
+                var destPair = new IntPair(mappingState.Index, srcSequenceIndex);
                 if (!destStateCache.TryGetValue(destPair, out var destStateIndex))
                 {
                     var destState = result.AddState();
@@ -503,7 +486,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
                             ? mappingState.EndWeight
                             : Weight.Zero);
                     stack.Push((mappingState.Index, srcSequenceIndex, destState.Index));
-                    destStateCache[destPair] = destState.Index;
+                    destStateCache.Add(destPair, destState.Index);
                     destStateIndex = destState.Index;
                 }
 
@@ -616,7 +599,7 @@ namespace Microsoft.ML.Probabilistic.Distributions.Automata
         /// Represents an automaton that maps lists of element pairs to real values. Such automata are used to represent transducers internally.
         /// </summary>
         protected class PairListAutomaton :
-            ListAutomaton<List<Pair<Option<TSrcElement>, Option<TDestElement>>>, Pair<Option<TSrcElement>, Option<TDestElement>>, TPairDistribution, PairListAutomaton>
+            ListAutomaton<List<(Option<TSrcElement>, Option<TDestElement>)>, (Option<TSrcElement>, Option<TDestElement>), TPairDistribution, PairListAutomaton>
         {
             /// <summary>
             /// Computes a set of outgoing transitions from a given state of the determinization result.
