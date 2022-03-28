@@ -403,21 +403,19 @@ namespace Microsoft.ML.Probabilistic.Compiler.Transforms
                     IStatement innerStmt = ist;
                     while (Containers.IsContainer(innerStmt))
                     {
-                        if (innerStmt is IForStatement)
-                            innerStmt = ((IForStatement)innerStmt).Body.Statements[0];
-                        else if (innerStmt is IConditionStatement)
-                            innerStmt = ((IConditionStatement)innerStmt).Then.Statements[0];
+                        if (innerStmt is IForStatement ifs)
+                            innerStmt = ifs.Body.Statements[0];
+                        else if (innerStmt is IConditionStatement ics)
+                            innerStmt = ics.Then.Statements[0];
                         else
                             throw new Exception();
                     }
-                    if (innerStmt is IExpressionStatement)
+                    if (innerStmt is IExpressionStatement ies)
                     {
-                        IExpressionStatement ies = (IExpressionStatement)innerStmt;
-                        if (ies.Expression is IAssignExpression)
+                        if (ies.Expression is IAssignExpression iae)
                         {
-                            IAssignExpression iae = (IAssignExpression)ies.Expression;
                             IVariableDeclaration ivd = Recognizer.GetVariableDeclaration(iae.Target);
-                            if (ivd != null && ivd.Name == "skillInSquad_F" && iae.Expression.ToString().Contains("skills_F"))
+                            if (ivd != null && ivd.Name == "NoisyNodes_index0__Q" && iae.Expression.ToString().Contains("nodes_uses_F"))
                                 Console.WriteLine(ivd);
                         }
                     }
@@ -1013,9 +1011,9 @@ namespace Microsoft.ML.Probabilistic.Compiler.Transforms
                     if (args.Count > 0)
                     {
                         IExpression arg = args[0];
-                        if (arg is ILiteralExpression)
+                        if (arg is ILiteralExpression ile)
                         {
-                            object value = ((ILiteralExpression)arg).Value;
+                            object value = ile.Value;
                             if (0.Equals(value))
                             {
                                 // result is an empty array
@@ -1031,7 +1029,7 @@ namespace Microsoft.ML.Probabilistic.Compiler.Transforms
             // Build a mapping between default parameter expressions and the corresponding model expressions
             int i = 0;
             Dictionary<IExpression, IExpression> parameterToExpressionMap = new Dictionary<IExpression, IExpression>();
-            foreach (ParameterInfo pi in method.GetParameters())
+            foreach (ParameterInfo pi in Util.GetParameters(method))
             {
                 IArgumentReferenceExpression paramRef = Builder.ParamRef(Builder.Param(pi.Name, pi.ParameterType));
                 if (i >= args.Count)

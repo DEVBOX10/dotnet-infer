@@ -7,12 +7,12 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
-using Assert = Microsoft.ML.Probabilistic.Tests.AssertHelper;
 using Microsoft.ML.Probabilistic.Collections;
 using Microsoft.ML.Probabilistic.Math;
-using System.Threading;
+using Assert = Microsoft.ML.Probabilistic.Tests.AssertHelper;
 
 namespace Microsoft.ML.Probabilistic.Tests
 {
@@ -21,6 +21,7 @@ namespace Microsoft.ML.Probabilistic.Tests
         [Fact]
         public void WeightedAverageTest()
         {
+            Assert.Equal(Environment.Is64BitProcess ? 3.86361619394904E-311 : 3.86361619394162E-311, MMath.WeightedAverage(0.82912896852490248, 2.5484859206000203E-311, 3.50752234977395E-313, 31.087830618727477));
             Assert.Equal(MMath.WeightedAverage(0.1, double.MinValue, 0.01, double.MinValue), double.MinValue);
             Assert.Equal(MMath.WeightedAverage(0.1, -double.Epsilon, double.MaxValue, -double.Epsilon), -double.Epsilon);
             Assert.Equal(MMath.WeightedAverage(1e-100, 2e-250, 1e-100, 4e-250), MMath.Average(2e-250, 4e-250));
@@ -47,8 +48,8 @@ namespace Microsoft.ML.Probabilistic.Tests
                             if (count > limit) break;
                             if (double.IsNaN(a + b)) continue;
                             double midpoint = MMath.WeightedAverage(wa, a, wb, b);
-                            Assert.True(midpoint >= System.Math.Min(a, b), $"Failed assertion: {midpoint} >= {System.Math.Min(a, b)}, wa={wa:r}, a={a:r}, wb={wb:r}, b={b:r}");
-                            Assert.True(midpoint <= System.Math.Max(a, b), $"Failed assertion: {midpoint} <= {System.Math.Max(a, b)}, wa={wa:r}, a={a:r}, wb={wb:r}, b={b:r}");
+                            Assert.True(midpoint >= System.Math.Min(a, b), $"Failed assertion: MMath.WeightedAverage({wa:r}, {a:r}, {wb:r}, {b:r}) {midpoint} >= {System.Math.Min(a, b)}");
+                            Assert.True(midpoint <= System.Math.Max(a, b), $"Failed assertion: MMath.WeightedAverage({wa:r}, {a:r}, {wb:r}, {b:r}) {midpoint} <= {System.Math.Max(a, b)}");
                             if (wa == wb) Assert.Equal(MMath.Average(a, b), midpoint);
                             Interlocked.Add(ref count, 1);
                         }
@@ -197,13 +198,20 @@ namespace Microsoft.ML.Probabilistic.Tests
             Assert.True(0 <= NormalCdfIntegral(213393529.2046706974506378173828125, -213393529.2046706974506378173828125, -1, 0.72893668811495072384656764856902984306419313043079455383121967315673828125e-9).Mantissa);
             Assert.True(0 < NormalCdfIntegral(-0.421468532207607216033551367218024097383022308349609375, 0.42146843802130329326161017888807691633701324462890625, -0.99999999999999989, 0.62292398855983019004972723654291189010479001808562316000461578369140625e-8).Mantissa);
 
+            // Checking all cases takes a long time.
+            const int limit = 2_000_000;
+            int count = 0;
             Parallel.ForEach(OperatorTests.Doubles(), x =>
             {
+                if (count > limit) return;
                 foreach (var y in OperatorTests.Doubles())
                 {
+                    if (count > limit) break;
                     foreach (var r in OperatorTests.Doubles().Where(d => d >= -1 && d <= 1))
                     {
+                        if (count > limit) break;
                         MMath.NormalCdfIntegral(x, y, r);
+                        Interlocked.Add(ref count, 1);
                     }
                 }
             });

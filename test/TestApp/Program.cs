@@ -83,6 +83,7 @@ namespace TestApp
             Stopwatch watch = new Stopwatch();
             watch.Start();
 
+
             bool runAllTests = false;
             if (runAllTests)
             {
@@ -112,7 +113,6 @@ namespace TestApp
             watch.Stop();
             Console.WriteLine("elapsed time = {0}ms", watch.ElapsedMilliseconds);
         }
-
     }
 }
 
