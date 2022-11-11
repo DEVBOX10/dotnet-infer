@@ -30,6 +30,7 @@ using Microsoft.ML.Probabilistic.Tests.CodeCompilerTests;
 #pragma warning disable 162
 #endif
 
+[assembly: AssemblyVersion("1.0.0.0")]
 namespace TestApp
 {
     internal static class Program
@@ -83,7 +84,10 @@ namespace TestApp
             Stopwatch watch = new Stopwatch();
             watch.Start();
 
-            new MaxGaussianOpTests().MaxTest2();
+            new GatedFactorTests().GatedSplitTest();
+            //new SerialTests().CountTrueTest();
+            //new InferTests().InferDeterministicTest4();
+            //new ModelTests().ObservedConstraintViolationError();
 
             bool runAllTests = false;
             if (runAllTests)
